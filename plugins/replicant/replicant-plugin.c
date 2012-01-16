@@ -250,6 +250,9 @@ NETWORK_MYSQLD_PLUGIN_PROTO(repclient_read_handshake) {
 
 	con->state = CON_STATE_SEND_AUTH;
 
+    g_message("%s.%d: sending auth packet to (%s)", 
+            __FILE__, __LINE__, con->server->dst->name->str);
+
 	return NETWORK_SOCKET_SUCCESS;
 }
 
@@ -260,9 +263,15 @@ NETWORK_MYSQLD_PLUGIN_PROTO(repclient_read_auth_result) {
 	guint8 status;
 	int err = 0;
 
+    g_message("%s.%d: start to read auth result from (%s)", 
+            __FILE__, __LINE__, con->server->dst->name->str);
+
 	const char query_packet[] = 
 		"\x03"                    /* COM_QUERY */
-		"SHOW MASTER STATUS"
+        /* "SHOW MASTER STATUS" */
+        "select @@version_comment limit 1"
+        /* "SHOW PROCESSLIST" */
+		/* "show master status" */
 		;
 
 	recv_sock = con->server;
@@ -303,12 +312,19 @@ NETWORK_MYSQLD_PLUGIN_PROTO(repclient_read_auth_result) {
 		return NETWORK_SOCKET_ERROR;
 	} 
 
+
+    network_mysqld_queue_reset(con->server);
+
+
 	g_string_free(g_queue_pop_tail(recv_sock->recv_queue->chunks), TRUE);
 
 	send_sock = con->server;
 	network_mysqld_queue_append(send_sock, send_sock->send_queue, C(query_packet));
 
 	con->state = CON_STATE_SEND_QUERY;
+
+    g_message("%s.%d: 'SHOW MASTER STATUS' is sent to backend (%s)", 
+            __FILE__, __LINE__, con->server->dst->name->str);
 
 	return NETWORK_SOCKET_SUCCESS;
 }
@@ -351,6 +367,11 @@ NETWORK_MYSQLD_PLUGIN_PROTO(repclient_read_query_result) {
 	chunk = recv_sock->recv_queue->chunks->tail;
 	packet.data = chunk->data;
 	packet.offset = 0;
+
+    g_message("%s.%d: read packet from backend (%s)", 
+            __FILE__, __LINE__, con->server->dst->name->str);
+
+    
 
 #if 0
 	g_message("%s.%d: packet-len: %08x, packet-id: %d, command: COM_(%02x)", 
@@ -463,24 +484,56 @@ NETWORK_MYSQLD_PLUGIN_PROTO(repclient_read_query_result) {
 }
 
 NETWORK_MYSQLD_PLUGIN_PROTO(repclient_connect_server) {
+
 	chassis_plugin_config *config = con->config;
 	gchar *address = config->master_address;
+    network_socket_retval_t rc;
 
-	con->server = network_socket_new();
+    if ( NULL == con->server ) {
 
-	if (0 != network_address_set_address(con->server->dst, address)) {
-		return -1;
-	}
-    
-	/* FIXME ... add non-blocking support (getsockopt()) */
+        con->server = network_socket_new();
 
-	if (0 != network_socket_connect(con->server)) {
-		return -1;
-	}
+        if (0 != network_address_set_address(con->server->dst, address)) {
+            return -1;
+        }
 
-	con->state = CON_STATE_SEND_HANDSHAKE;
+        g_message("master address is set to %s", config->master_address);
+        
+        rc = network_socket_connect(con->server);
+        switch ( rc ) {
 
-	return NETWORK_SOCKET_SUCCESS;
+            case NETWORK_SOCKET_ERROR_RETRY :
+
+                return NETWORK_SOCKET_ERROR_RETRY;
+                break;
+
+            case NETWORK_SOCKET_SUCCESS:
+                break;
+
+            default:
+                g_message("%s.%d: connecting to backend (%s) failed", 
+                        __FILE__, __LINE__, con->server->dst->name->str);
+
+                network_socket_free(con->server);
+                con->server = NULL;
+
+                return NETWORK_SOCKET_ERROR_RETRY;
+        }
+
+        /* con->state = CON_STATE_SEND_HANDSHAKE; */
+        con->state = CON_STATE_READ_HANDSHAKE;
+        return NETWORK_SOCKET_SUCCESS;
+    }
+    else {
+        
+        g_message("%s.%d: connected to backend (%s)", 
+                __FILE__, __LINE__, con->server->dst->name->str);
+
+        con->state = CON_STATE_READ_HANDSHAKE;
+        return NETWORK_SOCKET_SUCCESS;
+    }
+
+
 }
 
 NETWORK_MYSQLD_PLUGIN_PROTO(repclient_init) {
@@ -503,7 +556,7 @@ NETWORK_MYSQLD_PLUGIN_PROTO(repclient_cleanup) {
 	return NETWORK_SOCKET_SUCCESS;
 }
 
-int network_mysqld_repclient_connection_init(chassis G_GNUC_UNUSED *chas, network_mysqld_con *con) {
+int network_mysqld_repclient_connection_init( network_mysqld_con *con ) {
 	con->plugins.con_init                      = repclient_init;
 	con->plugins.con_connect_server            = repclient_connect_server;
 	con->plugins.con_read_handshake            = repclient_read_handshake;
@@ -799,9 +852,26 @@ int replicate_binlog_dump_file(const char *filename) {
  * init the plugin with the parsed config
  */
 int network_mysqld_replicant_plugin_apply_config(chassis G_GNUC_UNUSED *chas, chassis_plugin_config *config) {
+
+	network_mysqld_con *con;
+
 	if (!config->master_address) config->master_address = g_strdup(":4040");
 	if (!config->mysqld_username) config->mysqld_username = g_strdup("repl");
 	if (!config->mysqld_password) config->mysqld_password = g_strdup("");
+
+
+	/** 
+	 * create a connection handle for the listen socket 
+	 */
+	con = network_mysqld_con_new();
+	network_mysqld_add_connection(chas, con);
+	con->config = config;
+
+    network_mysqld_repclient_connection_init( con );
+
+	network_mysqld_con_handle(-1, 0, con);
+
+    return 0;
 
 	if (config->read_binlogs) {
 		int i;

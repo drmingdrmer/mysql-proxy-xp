@@ -539,8 +539,12 @@ network_socket_retval_t network_mysqld_con_get_packet(chassis G_GNUC_UNUSED*chas
 	packet_len = network_mysqld_proto_get_packet_len(&header);
 	packet_id  = network_mysqld_proto_get_packet_id(&header);
 
+    g_message("%s.%d: got packet id=%d, len=%d", 
+            __FILE__, __LINE__, packet_id, packet_len);
+
 	/* move the packet from the raw queue to the recv-queue */
 	if ((packet = network_queue_pop_string(con->recv_queue_raw, packet_len + NET_HEADER_SIZE, NULL))) {
+		g_debug_hexdump(G_STRLOC, S(packet));
 #ifdef NETWORK_DEBUG_TRACE_IO
 		/* to trace the data we received from the socket, enable this */
 		g_debug_hexdump(G_STRLOC, S(packet));
@@ -593,6 +597,8 @@ network_socket_retval_t network_mysqld_write(chassis G_GNUC_UNUSED*chas, network
 	network_socket_retval_t ret;
 
 	ret = network_socket_write(con, -1);
+
+    g_debug( "ret=%d", ret );
 
 	return ret;
 }
@@ -914,6 +920,10 @@ void network_mysqld_con_handle(int event_fd, short events, void *user_data) {
 
 	do {
 		ostate = con->state;
+		g_debug("%s: [%d] %s",
+				G_STRLOC,
+				getpid(),
+				network_mysqld_con_state_get_name(con->state));
 #ifdef NETWORK_DEBUG_TRACE_STATE_CHANGES
 		/* if you need the state-change information without dtrace, enable this */
 		g_debug("%s: [%d] %s",
@@ -1457,7 +1467,13 @@ void network_mysqld_con_handle(int event_fd, short events, void *user_data) {
 
 					break;
 				}
+                g_debug("%s.%d: write packet", __FILE__, __LINE__);
+                g_debug_hexdump(G_STRLOC, S(packet.data));
 			}
+
+            g_debug("%s.%d: sending packet", __FILE__, __LINE__);
+
+
 	
 			switch (network_mysqld_write(srv, con->server)) {
 			case NETWORK_SOCKET_SUCCESS:
@@ -1491,9 +1507,12 @@ void network_mysqld_con_handle(int event_fd, short events, void *user_data) {
 				con->state = CON_STATE_READ_QUERY_RESULT;
 				break;
 			}
+
+            g_debug("%s.%d: con->state changed to %s", __FILE__, __LINE__, network_mysqld_con_state_get_name( con->state ));
 				
 			break; 
 		case CON_STATE_READ_QUERY_RESULT: 
+            g_debug("%s.%d: handling CON_STATE_READ_QUERY_RESULT", __FILE__, __LINE__);
 			/* read all packets of the resultset 
 			 *
 			 * depending on the backend we may forward the data to the client right away
