@@ -1,0 +1,8 @@
+# break main
+run --defaults-file=/data/pkg/mysql-proxy-0.8.2/mysqlproxy.conf
+# break chassis_plugin_get_options
+# c
+# break network_mysqld_replicant_plugin_get_options
+# rbreak replicant-plugin.c:.
+# rbreak admin-plugin.c:.
+# c
